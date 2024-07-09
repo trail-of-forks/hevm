@@ -697,7 +697,7 @@ exec1 = do
         OpTload ->
           case stk of
             x:xs -> do
-              burn g_warm_storage_read $ -- TODO spec says "hot" not "warm"
+              burn g_warm_storage_read $
                 accessTStorage self x $ \y -> do
                   next
                   assign (#state % #stack) (y:xs)
@@ -711,7 +711,6 @@ exec1 = do
                 next
                 assign (#state % #stack) xs
                 modifying (#env % #contracts % ix self % #t_storage) (writeStorage x new)
-                -- TODO there was some refunding code here, maybe bring it back
             _ -> underrun
 
         OpJump ->
