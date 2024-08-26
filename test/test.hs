@@ -3878,7 +3878,8 @@ genEContract sz = do
   b <- defaultWord sz
   n <- arbitrary
   s <- genStorage sz
-  pure $ C c s b n
+  ts <- genStorage sz
+  pure $ C {code=c, storage=s, tStorage=ts, balance=b, nonce=n}
 
 -- ZeroDepthWord
 newtype ZeroDepthWord = ZeroDepthWord (Expr EWord)

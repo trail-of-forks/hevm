@@ -177,6 +177,7 @@ unknownContract :: Expr EAddr -> Contract
 unknownContract addr = Contract
   { code        = UnknownCode addr
   , storage     = AbstractStore addr Nothing
+  , tStorage    = AbstractStore addr Nothing
   , origStorage = AbstractStore addr Nothing
   , balance     = Balance addr
   , nonce       = Nothing
@@ -191,6 +192,7 @@ abstractContract :: ContractCode -> Expr EAddr -> Contract
 abstractContract code addr = Contract
   { code        = code
   , storage     = AbstractStore addr Nothing
+  , tStorage    = AbstractStore addr Nothing
   , origStorage = AbstractStore addr Nothing
   , balance     = Balance addr
   , nonce       = if isCreation code then Just 1 else Just 0
@@ -209,6 +211,7 @@ initialContract :: ContractCode -> Contract
 initialContract code = Contract
   { code        = code
   , storage     = ConcreteStore mempty
+  , tStorage    = ConcreteStore mempty
   , origStorage = ConcreteStore mempty
   , balance     = Lit 0
   , nonce       = if isCreation code then Just 1 else Just 0
@@ -691,6 +694,25 @@ exec1 = do
                        -- if any of the arguments are symbolic,
                        -- don't change the refund counter
                        _ -> noop
+            _ -> underrun
+
+        OpTLoad ->
+          case stk of
+            x:xs -> do
+              burn g_warm_storage_read $
+                accessTStorage self x $ \y -> do
+                  next
+                  assign (#state % #stack) (y:xs)
+            _ -> underrun
+
+        OpTStore ->
+          notStatic $
+          case stk of
+            x:new:xs ->
+              burn g_sload $ do
+                next
+                assign (#state % #stack) xs
+                modifying (#env % #contracts % ix self % #tStorage) (writeStorage x new)
             _ -> underrun
 
         OpJump ->
@@ -1336,6 +1358,29 @@ accessStorage addr slot continue = do
               assign #result Nothing
               continue (Lit x))
 
+accessTStorage
+  :: VMOps t => Expr EAddr
+  -> Expr EWord
+  -> (Expr EWord -> EVM t s ())
+  -> EVM t s ()
+accessTStorage addr slot continue = do
+  let slotConc = Expr.concKeccakSimpExpr slot
+  use (#env % #contracts % at addr) >>= \case
+    Just c ->
+      -- Try first without concretization. Then if we get a Just, with concretization
+      -- See `accessStorage` for more details
+      case readStorage slot c.tStorage of
+        Just x -> case readStorage slotConc c.tStorage of
+          Just _ -> continue x
+          Nothing -> continue $ Lit 0
+        Nothing -> continue $ Lit 0
+    Nothing ->
+      fetchAccount addr $ \_ ->
+        accessTStorage addr slot continue
+
+clearTStorages :: EVM t s ()
+clearTStorages = (#env % #contracts) %= fmap (\c -> c { tStorage = ConcreteStore mempty } :: Contract)
+
 accountExists :: Expr EAddr -> VM t s -> Bool
 accountExists addr vm =
   case Map.lookup addr vm.env.contracts of
@@ -1370,6 +1415,7 @@ finalize = do
       revertContracts
       revertSubstate
     Just (VMSuccess output) -> do
+      clearTStorages
       -- deposit the code from a creation tx
       pc' <- use (#state % #pc)
       creation <- use (#tx % #isCreate)
@@ -1665,7 +1711,7 @@ cheatActions = Map.fromList
           Just a -> assign (#config % #overrideCaller) (Just a)
           Nothing -> vmError (BadCheatCode sig)
         _ -> vmError (BadCheatCode sig)
-          
+
   , action "startPrank(address)" $
       \sig _ _ input -> case decodeStaticArgs 0 1 input of
         [addr]  -> case wordToAddr addr of
